@@ -8,7 +8,7 @@ use tract_hir::prelude::tract_itertools::Itertools;
 
 use crate::data_resolver::{self, ModelDataResolver};
 use crate::pb::type_proto::Value;
-use crate::pb::{self, TensorProto, TypeProto};
+use crate::pb::{self, ModelProto, OperatorSetIdProto, TensorProto, TypeProto};
 use crate::tensor::{load_tensor, translate_inference_fact};
 use prost::Message;
 
@@ -35,6 +35,7 @@ pub fn optional_outputs(pb: &pb::NodeProto) -> impl Iterator<Item = Option<usize
         }
     })
 }
+
 
 #[derive(Clone)]
 pub struct ParsingContext<'a> {
@@ -213,6 +214,42 @@ impl OnnxOpRegister {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct OnnxMetadata {
+    pub ir_version: i64,
+    pub opset_import: Vec<OperatorSetIdProto>,
+    pub producer_name: String,
+    pub producer_version: String,
+    pub domain: String,
+    pub model_version: i64,
+    pub doc_string: String,
+    pub metadata_props: HashMap<String,String> 
+}
+
+
+impl OnnxMetadata {
+    pub fn get_metadata(model_path: impl AsRef<path::Path> ) -> TractResult<OnnxMetadata> {
+        let model_path = model_path.as_ref();
+        let map = unsafe {
+            memmap2::Mmap::map(&fs::File::open(model_path).with_context(|| format!("Opening {model_path:?}"))?)?
+        };
+        let model_proto = crate::pb::ModelProto::decode(&*map)?;
+        let parse_metadata_props: HashMap<String,String> = model_proto.to_owned().metadata_props
+            .into_iter().map(|entry| (entry.key, entry.value)).collect();
+       Ok(OnnxMetadata {
+            ir_version: model_proto.ir_version,
+            opset_import: model_proto.opset_import,
+            producer_name: model_proto.producer_name,
+            producer_version: model_proto.producer_version,
+            domain: model_proto.domain,
+            model_version: model_proto.model_version,
+            doc_string: model_proto.doc_string,
+            metadata_props:  parse_metadata_props 
+        })
+    }
+}
+
+
 #[derive(Clone)]
 pub struct Onnx {
     pub op_register: OnnxOpRegister,
@@ -250,6 +287,7 @@ impl Onnx {
             .unwrap_or(0);
         let graph =
             proto.graph.as_ref().ok_or_else(|| anyhow!("model proto does not contain a graph"))?;
+        println!("pb: {:#?} {:#?}", &proto.metadata_props, &proto.ir_version);
         debug!("ONNX operator set version: {:?}", onnx_operator_set_version);
         if onnx_operator_set_version != 0 && !(9..19).contains(&onnx_operator_set_version) {
             warn!("ONNX operator for your model is {}, tract is only tested against \
@@ -287,6 +325,7 @@ impl Onnx {
         }
         Ok(())
     }
+
 }
 
 impl Framework<pb::ModelProto, InferenceModel> for Onnx {
